@@ -37,7 +37,7 @@ MAIL_SOURCES = {
 DUCKMAIL_KEY = ""
 
 CPA_ENABLED = True
-CPA_API_URL = "https://www.ananapi.com"
+CPA_API_URL = "http://180.214.181.219:8317/"
 CPA_API_TOKEN = "070587"  # CPA API Token（Bearer 认证）
 
 # GeoNode 住宅代理配置
