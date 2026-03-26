@@ -38,7 +38,7 @@ DUCKMAIL_KEY = ""
 
 CPA_ENABLED = True
 CPA_API_URL = "https://www.ananapi.com"
-CPA_API_TOKEN = ""  # CPA API Token（Bearer 认证）
+CPA_API_TOKEN = "070587"  # CPA API Token（Bearer 认证）
 
 # GeoNode 住宅代理配置
 PROXY_ENABLED = False  # 是否启用代理（False 则直连）
