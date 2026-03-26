@@ -21,7 +21,7 @@ import urllib.parse
 import urllib.request
 import urllib.error
 
-from curl_cffi import requests
+from curl_cffi import requests, CurlMime
 
 # ==========================================
 # 全局配置
@@ -36,14 +36,13 @@ MAIL_SOURCES = {
 
 DUCKMAIL_KEY = ""
 
-SUB2API_ENABLED = False
-SUB2API_URL = ""
-SUB2API_EMAIL = "admin@sub2api.local"
-SUB2API_PASSWORD = "1l123451"
+CPA_ENABLED = True
+CPA_API_URL = "https://www.ananapi.com"
+CPA_API_TOKEN = ""  # CPA API Token（Bearer 认证）
 
 # GeoNode 住宅代理配置
 PROXY_ENABLED = False  # 是否启用代理（False 则直连）
-PROXY_URL = "http://geonode_FqbpsLlLEZ-type-residential:e6e6c7f4-6a9e-4ea3-b78a-f2018a188ab9@us.proxy.geonode.io:9000"
+PROXY_URL = "http://geonode_FqbpsLlLEZ:e6e6c7f4-6a9e-4ea3-b78a-f2018a188ab9@rotating-datacenter.geonode.io:9000"
 
 # Clash Verge 自动切换节点（每次注册前随机换 IP）
 CLASH_ENABLED = False
@@ -1548,123 +1547,87 @@ def run(proxy: Optional[str]) -> Optional[str]:
 
 
 # ==========================================
-# Sub2Api 自动推送
+# CPA 自动推送
 # ==========================================
 
-_sub2api_token = ""
-_sub2api_lock = threading.Lock()
+
+def _normalize_cpa_url(api_url: str) -> str:
+    """将 CPA 地址规范化为 auth-files 接口地址"""
+    normalized = (api_url or "").strip().rstrip("/")
+    lower = normalized.lower()
+    if not normalized:
+        return ""
+    if lower.endswith("/auth-files"):
+        return normalized
+    if lower.endswith("/v0/management") or lower.endswith("/management"):
+        return f"{normalized}/auth-files"
+    if lower.endswith("/v0"):
+        return f"{normalized}/management/auth-files"
+    return f"{normalized}/v0/management/auth-files"
 
 
-def _sub2api_login() -> str:
-    """登录 sub2api 获取 bearer token"""
-    try:
-        resp = requests.post(
-            f"{SUB2API_URL}/api/v1/auth/login",
-            json={"email": SUB2API_EMAIL, "password": SUB2API_PASSWORD},
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            return resp.json().get("data", {}).get("access_token", "")
-    except Exception as e:
-        print(f"[Sub2Api] 登录失败: {e}")
-    return ""
-
-
-def push_to_sub2api(token_json_str: str) -> bool:
-    """将注册好的 token 推送到 sub2api"""
-    global _sub2api_token
+def push_to_cpa(token_json_str: str) -> bool:
+    """将注册好的 token 推送到 CPA 服务器"""
     try:
         t = json.loads(token_json_str)
-        email = t.get("email", "")
-        access_token = t.get("access_token", "")
-        refresh_token = t.get("refresh_token", "")
-        account_id = t.get("account_id", "")
+        email = t.get("email", "unknown")
 
-        if not refresh_token:
-            print("[Sub2Api] 缺少 refresh_token，跳过推送")
+        if not t.get("refresh_token"):
+            print(f"[CPA] [{email}] 缺少 refresh_token，跳过推送")
             return False
 
-        # 从 access_token 解析额外信息
-        at_claims = _jwt_claims_no_verify(access_token)
-        at_auth = at_claims.get("https://api.openai.com/auth") or {}
-        exp = at_claims.get("exp", int(time.time()) + 863999)
+        upload_url = _normalize_cpa_url(CPA_API_URL)
+        if not upload_url:
+            print("[CPA] API URL 未配置")
+            return False
+        if not CPA_API_TOKEN:
+            print("[CPA] API Token 未配置")
+            return False
 
-        # 从 id_token 解析 organization_id
-        id_token = t.get("id_token", "")
-        it_claims = _jwt_claims_no_verify(id_token)
-        it_auth = it_claims.get("https://api.openai.com/auth") or {}
-        org_id = ""
-        orgs = it_auth.get("organizations") or []
-        if orgs:
-            org_id = (orgs[0] or {}).get("id", "")
+        filename = f"{email}.json"
+        file_content = token_json_str.encode("utf-8")
+        headers = {"Authorization": f"Bearer {CPA_API_TOKEN}"}
 
-        payload = {
-            "name": email,
-            "notes": "",
-            "platform": "openai",
-            "type": "oauth",
-            "credentials": {
-                "access_token": access_token,
-                "refresh_token": refresh_token,
-                "expires_in": 863999,
-                "expires_at": exp,
-                "chatgpt_account_id": account_id or at_auth.get("chatgpt_account_id", ""),
-                "chatgpt_user_id": at_auth.get("chatgpt_user_id", ""),
-                "organization_id": org_id,
-            },
-            "extra": {"email": email},
-            # "extra": {"email": email, "openai_passthrough": True},
-            "group_ids": [2],
-            "concurrency": 10,
-            "priority": 1,
-            "auto_pause_on_expired": True,
-        }
-
-        with _sub2api_lock:
-            if not _sub2api_token:
-                _sub2api_token = _sub2api_login()
-            if not _sub2api_token:
-                print("[Sub2Api] 无法获取 token，推送失败")
-                return False
-            current_token = _sub2api_token
-
+        # 尝试 multipart 上传
+        mime = CurlMime()
+        mime.addpart(
+            name="file",
+            data=file_content,
+            filename=filename,
+            content_type="application/json",
+        )
         resp = requests.post(
-            f"{SUB2API_URL}/api/v1/admin/accounts",
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {current_token}",
-                "Content-Type": "application/json",
-            },
-            timeout=20,
+            upload_url,
+            multipart=mime,
+            headers=headers,
+            timeout=30,
+            impersonate="chrome110",
         )
 
-        # 401 重新登录重试
-        if resp.status_code == 401:
-            with _sub2api_lock:
-                # 只在 token 未被其他线程刷新时才重新登录
-                if _sub2api_token == current_token:
-                    _sub2api_token = _sub2api_login()
-                current_token = _sub2api_token
-            if current_token:
-                resp = requests.post(
-                    f"{SUB2API_URL}/api/v1/admin/accounts",
-                    json=payload,
-                    headers={
-                        "Authorization": f"Bearer {current_token}",
-                        "Content-Type": "application/json",
-                    },
-                    timeout=20,
-                )
-
         if resp.status_code in (200, 201):
-            print(f"[Sub2Api] 推送成功!")
+            print(f"[CPA] [{email}] 推送成功!")
             return True
-        else:
-            print(f"[Sub2Api] 推送失败 ({resp.status_code}): {resp.text[:200]}")
-            return False
+
+        # multipart 失败，尝试 raw JSON 回退
+        if resp.status_code in (404, 405, 415):
+            print(f"[CPA] multipart 失败 ({resp.status_code})，尝试 raw JSON...")
+            raw_url = f"{upload_url}?name={quote(filename)}"
+            resp = requests.post(
+                raw_url,
+                data=file_content,
+                headers={**headers, "Content-Type": "application/json"},
+                timeout=30,
+                impersonate="chrome110",
+            )
+            if resp.status_code in (200, 201):
+                print(f"[CPA] [{email}] 推送成功! (raw JSON)")
+                return True
+
+        print(f"[CPA] [{email}] 推送失败 ({resp.status_code}): {resp.text[:200]}")
+        return False
 
     except Exception as e:
-        print(f"[Sub2Api] 推送异常: {e}")
+        print(f"[CPA] 推送异常: {e}")
         return False
 
 
@@ -1711,8 +1674,8 @@ def main() -> None:
                 f.write(token_json)
         with _print_lock:
             print(f"[*] 成功! Token 已保存至: {file_path}")
-        if SUB2API_ENABLED:
-            push_to_sub2api(token_json)
+        if CPA_ENABLED:
+            push_to_cpa(token_json)
 
     def _one_run(idx: int) -> None:
         with _print_lock:
@@ -1737,6 +1700,7 @@ def main() -> None:
 
     while True:
         count += 1
+
         _clash_switch_node()  # 每批开始前切一次节点
         batch_size = 1 if args.once else workers
         if batch_size == 1:
