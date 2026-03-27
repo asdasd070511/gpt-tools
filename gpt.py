@@ -28,7 +28,7 @@ from curl_cffi import requests, CurlMime
 # ==========================================
 
 MAIL_SOURCES = {
-    "tempmail_lol": True,   # tempmail.lol（域名不易被封，推荐）
+    "freecustom": True,     # freecustom.email（公共信箱，域名不易被封）
     "onesecmail": False,    # 1secmail（被 CF 拦截，暂不可用）
     "duckmail": False,      # DuckMail（需 API Key，duckmail.sbs 域名已被封）
     "mailtm": False,        # mail.gw（域名大多被封，仅兜底）
@@ -55,9 +55,16 @@ CLASH_PROXY_GROUP = "鹿语云"  # 你的主代理组名称
 # ==========================================
 
 MAILTM_BASE = "https://api.mail.gw"
-TEMPMAIL_LOL_BASE = "https://api.tempmail.lol/v2"
 DUCKMAIL_BASE = "https://api.duckmail.sbs"
 ONESECMAIL_BASE = "https://www.1secmail.com/api/v1/"
+
+# ── freecustom.email 配置 ──
+FCE_BASE_URL  = "https://www.freecustom.email"
+FCE_TOKEN_TTL = 25 * 60  # token 有效期 25 分钟
+FCE_ADJECTIVES = ["bright","frozen","silent","swift","dark","bold","wild","cool","sunny","lucky"]
+FCE_NOUNS      = ["pixel","wolf","star","fox","river","stone","leaf","moon","bird","cat"]
+_fce_token    : str   = ""
+_fce_token_ts : float = 0.0
 
 
 def _mailtm_headers(*, token: str = "", use_json: bool = False) -> Dict[str, Any]:
@@ -200,26 +207,110 @@ def _try_duckmail(proxies: Any, duckmail_key: str) -> tuple:
         return "", ""
 
 
-def _try_tempmail_lol(proxies: Any) -> tuple:
-    """尝试用 tempmail.lol 创建邮箱"""
-    tempmail_proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
-    try:
-        resp = requests.post(
-            f"{TEMPMAIL_LOL_BASE}/inbox/create",
-            headers={"Content-Type": "application/json"},
-            proxies=tempmail_proxies, impersonate="chrome", timeout=15,
-        )
-        if resp.status_code in (200, 201):
+def _fce_fetch_token(retries: int = 5):
+    """获取 freecustom.email 全局 auth token"""
+    global _fce_token, _fce_token_ts
+    fce_proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
+    headers = {
+        "x-fce-client": "web-client",
+        "Referer": f"{FCE_BASE_URL}/zh",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "*/*",
+    }
+    for attempt in range(retries + 1):
+        try:
+            resp = requests.post(
+                f"{FCE_BASE_URL}/api/auth", json={},
+                headers=headers, proxies=fce_proxies,
+                impersonate="chrome", timeout=15,
+            )
+            if resp.status_code == 403:
+                print(f"  [!] fce auth 第 {attempt+1} 次 403，重试...")
+                continue
+            resp.raise_for_status()
+            _fce_token    = resp.json()["token"]
+            _fce_token_ts = time.time()
+            print(f"[+] fce token: {_fce_token[:40]}...")
+            return
+        except Exception as e:
+            print(f"  [!] fce auth 第 {attempt+1} 次失败: {e}")
+    raise RuntimeError("freecustom.email 连续取 token 失败")
+
+
+def _fce_refresh_if_needed():
+    if time.time() - _fce_token_ts >= FCE_TOKEN_TTL:
+        print("[*] 刷新 fce token...")
+        _fce_fetch_token()
+
+
+def _fce_get_domains() -> list:
+    """获取 freecustom.email 可用域名"""
+    _fce_refresh_if_needed()
+    fce_proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "*/*",
+        "Referer": f"{FCE_BASE_URL}/zh",
+        "x-fce-client": "web-client",
+        "Authorization": f"Bearer {_fce_token}",
+    }
+    resp = requests.get(
+        f"{FCE_BASE_URL}/api/domains",
+        headers=headers, proxies=fce_proxies,
+        impersonate="chrome", timeout=15,
+    )
+    resp.raise_for_status()
+    return [d["domain"] for d in resp.json().get("data", [])]
+
+
+def _fce_fetch_inbox(email: str, retries: int = 3) -> list:
+    """查询 freecustom.email 公共信箱，每次用独立 session 走 rotating proxy"""
+    _fce_refresh_if_needed()
+    fce_proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "*/*",
+        "Referer": f"{FCE_BASE_URL}/zh",
+        "x-fce-client": "web-client",
+        "Authorization": f"Bearer {_fce_token}",
+    }
+    for attempt in range(retries + 1):
+        try:
+            resp = requests.get(
+                f"{FCE_BASE_URL}/api/public-mailbox",
+                params={"fullMailboxId": email},
+                headers=headers, proxies=fce_proxies,
+                impersonate="chrome", timeout=15,
+            )
+            if resp.status_code in (429, 403):
+                time.sleep(1)
+                continue
+            resp.raise_for_status()
             data = resp.json()
-            email = data.get("address", "")
-            token = data.get("token", "")
-            if email and token:
-                print(f"[*] tempmail.lol 邮箱: {email}")
-                return email, f"tempmail_lol:{token}"
-        print(f"[*] tempmail.lol 返回 {resp.status_code}")
+            return data.get("data") or data.get("emails") or []
+        except Exception as e:
+            if attempt == retries:
+                raise
+            time.sleep(1)
+    return []
+
+
+def _try_freecustom(proxies: Any) -> tuple:
+    """使用 freecustom.email 公共信箱"""
+    try:
+        _fce_fetch_token()
+        domains = _fce_get_domains()
+        if not domains:
+            print("[*] freecustom.email 无可用域名")
+            return "", ""
+        domain = random.choice(domains)
+        local = f"{random.choice(FCE_ADJECTIVES)}-{random.choice(FCE_NOUNS)}{random.randint(100,999)}"
+        email = f"{local}@{domain}"
+        print(f"[*] freecustom.email 邮箱: {email}")
+        return email, f"freecustom:{email}"
     except Exception as e:
-        print(f"[*] tempmail.lol 不可用: {e}")
-    return "", ""
+        print(f"[*] freecustom.email 不可用: {e}")
+        return "", ""
 
 
 def _try_onesecmail(proxies: Any) -> tuple:
@@ -286,9 +377,9 @@ def _try_mailtm(proxies: Any) -> tuple:
 
 
 def get_email_and_token(proxies: Any = None) -> tuple:
-    """仅使用 tempmail.lol 邮箱，不考虑备选"""
-    print("[*] 邮箱源: tempmail_lol (专用代理)")
-    return _try_tempmail_lol(proxies)
+    """仅使用 freecustom.email 公共信箱"""
+    print("[*] 邮箱源: freecustom.email")
+    return _try_freecustom(proxies)
 
 
 def _poll_hydra_otp(base_url: str, token: str, regex: str, proxies: Any = None, seen_msg_ids: set = None) -> str:
@@ -365,7 +456,7 @@ def _poll_hydra_otp(base_url: str, token: str, regex: str, proxies: Any = None, 
 
 
 def get_oai_code(token: str, email: str, proxies: Any = None, seen_msg_ids: set = None) -> str:
-    """轮询获取 OpenAI 验证码（支持 onesecmail / duckmail / tempmail.lol / mail.gw）"""
+    """轮询获取 OpenAI 验证码（支持 onesecmail / duckmail / freecustom.email / mail.gw）"""
     if seen_msg_ids is None:
         seen_msg_ids = set()
     regex = r"(?<!\d)(\d{6})(?!\d)"
@@ -416,29 +507,19 @@ def get_oai_code(token: str, email: str, proxies: Any = None, seen_msg_ids: set 
     if token.startswith("duckmail:"):
         return _poll_hydra_otp(DUCKMAIL_BASE, token[len("duckmail:"):], regex, proxies, seen_msg_ids)
 
-    if token.startswith("tempmail_lol:"):
-        # tempmail.lol 模式
-        real_token = token[len("tempmail_lol:"):]
-        tempmail_proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
-        for _ in range(5):
+    if token.startswith("freecustom:"):
+        # freecustom.email 模式
+        fce_email = token[len("freecustom:"):]
+        for _ in range(40):
             print(".", end="", flush=True)
             try:
-                resp = requests.get(
-                    f"{TEMPMAIL_LOL_BASE}/inbox?token={real_token}",
-                    proxies=tempmail_proxies,
-                    impersonate="chrome",
-                    timeout=15,
-                )
-                if resp.status_code != 200:
-                    time.sleep(3)
-                    continue
-                data = resp.json()
-                for msg in data.get("emails", []):
+                mails = _fce_fetch_inbox(fce_email)
+                for msg in mails:
                     msg_id = str(msg.get("id") or msg.get("messageId") or "")
                     if msg_id in seen_msg_ids:
                         continue
                     seen_msg_ids.add(msg_id)
-                    sender = str(msg.get("from") or "").lower()
+                    sender = str(msg.get("from") or msg.get("sender") or "").lower()
                     subject = str(msg.get("subject") or "")
                     body = str(msg.get("body") or msg.get("text") or "")
                     html = str(msg.get("html") or "")
@@ -552,20 +633,17 @@ def get_oai_verify(token: str, email: str, proxies: Any = None) -> str:
             time.sleep(3)
         print(" 超时"); return ""
 
-    if token.startswith("tempmail_lol:"):
-        real_token = token[len("tempmail_lol:"):]
-        tempmail_proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
-        for _ in range(5):
+    if token.startswith("freecustom:"):
+        fce_email = token[len("freecustom:"):]
+        for _ in range(40):
             print(".", end="", flush=True)
             try:
-                resp = requests.get(f"{TEMPMAIL_LOL_BASE}/inbox?token={real_token}", proxies=tempmail_proxies, impersonate="chrome", timeout=15)
-                if resp.status_code != 200:
-                    time.sleep(3); continue
-                for msg in resp.json().get("emails", []):
+                mails = _fce_fetch_inbox(fce_email)
+                for msg in mails:
                     msg_id = str(msg.get("id") or msg.get("messageId") or "")
                     if msg_id in seen_ids: continue
                     seen_ids.add(msg_id)
-                    sender = str(msg.get("from") or "").lower()
+                    sender = str(msg.get("from") or msg.get("sender") or "").lower()
                     subject = str(msg.get("subject") or "")
                     body = str(msg.get("body") or msg.get("text") or "")
                     html = str(msg.get("html") or "")
