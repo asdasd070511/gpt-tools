@@ -1065,6 +1065,7 @@ def _login_for_token(
     impersonate: str,
     user_agent: str,
     sec_ch_ua: str,
+    seen_msg_ids: set = None,
 ) -> Optional[str]:
     """用已注册的邮箱和密码，通过登录流程获取 token"""
     print(f"[*] 开始用密码登录: {email}")
@@ -1165,7 +1166,9 @@ def _login_for_token(
             print("[*] 登录需要邮箱 OTP 验证...")
             if pwd_continue:
                 s.get(pwd_continue, headers={"referer": "https://auth.openai.com/log-in/password"}, allow_redirects=True)
-            otp_code = get_oai_code(dev_token, email, proxies)
+            if seen_msg_ids is None:
+                seen_msg_ids = set()
+            otp_code = get_oai_code(dev_token, email, proxies, seen_msg_ids=seen_msg_ids)
             if not otp_code:
                 print("[Error] 登录 OTP 未收到验证码")
                 print(f"[Info] 邮箱: {email} 密码: {password} (可手动登录)")
@@ -1402,10 +1405,10 @@ def run(proxy: Optional[str]) -> Optional[str]:
         pwd_continue = pwd_data.get("continue_url", "")
 
         # --- 3. 邮箱验证（如需要）---
+        _otp_seen = set()  # 跨重试共享的已见消息 ID（也传给 _login_for_token 避免重复抓旧验证码）
         if "email" in pwd_page_type.lower() or "verify" in pwd_page_type.lower() or "otp" in pwd_page_type.lower():
             if pwd_continue:
                 s.get(pwd_continue, headers={"referer": "https://auth.openai.com/create-account/password"}, allow_redirects=True)
-            _otp_seen = set()  # 跨重试共享的已见消息 ID
             otp_code = get_oai_code(dev_token, email, proxies, seen_msg_ids=_otp_seen)
             if otp_code:
                 time.sleep(random.uniform(0.5, 1.2))
@@ -1493,7 +1496,7 @@ def run(proxy: Optional[str]) -> Optional[str]:
         # --- 处理手机号验证（add_phone）---
         if "phone" in ca_page_type.lower() or "phone" in ca_continue.lower():
             print("[*] OpenAI 要求手机号验证，跳过此步骤，改用密码登录获取 token...")
-            return _login_for_token(email, password, dev_token, proxies, _impersonate, _user_agent, _sec_ch_ua)
+            return _login_for_token(email, password, dev_token, proxies, _impersonate, _user_agent, _sec_ch_ua, seen_msg_ids=_otp_seen)
 
         # 如果有 continue_url，手动跟重定向，捕获 OAuth callback
         if ca_continue and "phone" not in ca_continue.lower():
