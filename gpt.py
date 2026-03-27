@@ -41,7 +41,7 @@ CPA_API_URL = "http://180.214.181.219:8317/"
 CPA_API_TOKEN = "070587"  # CPA API Token（Bearer 认证）
 
 # GeoNode 住宅代理配置
-PROXY_ENABLED = False  # 是否启用代理（False 则直连）
+PROXY_ENABLED = True   # 是否启用代理（False 则直连）
 PROXY_URL = "http://geonode_FqbpsLlLEZ:e6e6c7f4-6a9e-4ea3-b78a-f2018a188ab9@rotating-datacenter.geonode.io:9000"
 
 # Clash Verge 自动切换节点（每次注册前随机换 IP）
