@@ -510,7 +510,7 @@ def get_oai_code(token: str, email: str, proxies: Any = None, seen_msg_ids: set 
     if token.startswith("freecustom:"):
         # freecustom.email 模式
         fce_email = token[len("freecustom:"):]
-        for _ in range(40):
+        for _ in range(5):
             print(".", end="", flush=True)
             try:
                 mails = _fce_fetch_inbox(fce_email)
@@ -635,7 +635,7 @@ def get_oai_verify(token: str, email: str, proxies: Any = None) -> str:
 
     if token.startswith("freecustom:"):
         fce_email = token[len("freecustom:"):]
-        for _ in range(40):
+        for _ in range(5):
             print(".", end="", flush=True)
             try:
                 mails = _fce_fetch_inbox(fce_email)
