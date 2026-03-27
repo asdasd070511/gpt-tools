@@ -65,6 +65,7 @@ FCE_ADJECTIVES = ["bright","frozen","silent","swift","dark","bold","wild","cool"
 FCE_NOUNS      = ["pixel","wolf","star","fox","river","stone","leaf","moon","bird","cat"]
 _fce_token    : str   = ""
 _fce_token_ts : float = 0.0
+_fce_domains  : list  = []
 
 
 def _mailtm_headers(*, token: str = "", use_json: bool = False) -> Dict[str, Any]:
@@ -238,14 +239,19 @@ def _fce_fetch_token(retries: int = 5):
 
 
 def _fce_refresh_if_needed():
+    global _fce_domains
     if time.time() - _fce_token_ts >= FCE_TOKEN_TTL:
         print("[*] 刷新 fce token...")
+        _fce_domains = []  # token 刷新后清空域名缓存
         _fce_fetch_token()
 
 
 def _fce_get_domains() -> list:
-    """获取 freecustom.email 可用域名"""
+    """获取 freecustom.email 可用域名（带缓存，token 刷新后重新拉取）"""
+    global _fce_domains
     _fce_refresh_if_needed()
+    if _fce_domains:
+        return _fce_domains
     fce_proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -260,7 +266,8 @@ def _fce_get_domains() -> list:
         impersonate="chrome", timeout=15,
     )
     resp.raise_for_status()
-    return [d["domain"] for d in resp.json().get("data", [])]
+    _fce_domains = [d["domain"] for d in resp.json().get("data", [])]
+    return _fce_domains
 
 
 def _fce_fetch_inbox(email: str, retries: int = 3) -> list:
@@ -298,7 +305,10 @@ def _fce_fetch_inbox(email: str, retries: int = 3) -> list:
 def _try_freecustom(proxies: Any) -> tuple:
     """使用 freecustom.email 公共信箱"""
     try:
-        _fce_fetch_token()
+        if not _fce_token:
+            _fce_fetch_token()
+        else:
+            _fce_refresh_if_needed()
         domains = _fce_get_domains()
         if not domains:
             print("[*] freecustom.email 无可用域名")
